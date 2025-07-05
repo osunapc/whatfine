@@ -114,20 +114,30 @@ Start backend:
 npm start
 ```
 
-Open a second terminal, go to frontend folder and create .env file:
+**Frontend Setup (using Vite, React 18, MUI v5):**
 
-```bash
-nano .env
-REACT_APP_BACKEND_URL = http://localhost:8080/ # Your previous configured backend app URL.
-```
+Open a second terminal, go to the `frontend` folder.
 
-Start frontend app:
+1.  **Install dependencies**:
+    ```bash
+    npm install
+    ```
+2.  **Environment Variables**:
+    Create a `.env` file in the `frontend` directory (you can copy `frontend/.env.example`).
+    Update the variables, especially `VITE_BACKEND_URL`:
+    ```bash
+    VITE_BACKEND_URL=http://localhost:8080 # URL of your running backend
+    # VITE_HOURS_CLOSE_TICKETS_AUTO= (optional)
+    ```
+    *Note: Frontend variables now use the `VITE_` prefix and are accessed via `import.meta.env.VITE_...` in the code.*
 
-```bash
-npm start
-```
+3.  **Start frontend development server**:
+    ```bash
+    npm run dev
+    ```
+    This will typically start the frontend on `http://localhost:5173`.
 
-- Go to http://your_server_ip:3000/signup
+- Go to the frontend URL (e.g., http://localhost:5173 or your server IP if deployed) and then `/signup`
 - Create an user and login with it.
 - On the sidebard, go to _Connections_ page and create your first WhatsApp connection.
 - Wait for QR CODE button to appear, click it and read qr code.
@@ -274,23 +284,34 @@ cd ../frontend
 npm install
 ```
 
-Create frontend .env file and fill it ONLY with your backend address, it should look like this:
+Create frontend .env file (e.g., `whaticket/frontend/.env`) and set your backend URL:
 
 ```bash
-REACT_APP_BACKEND_URL = https://api.mydomain.com/
+VITE_BACKEND_URL=https://api.mydomain.com/
 ```
 
-Build frontend app:
+Build frontend app (this will create a `dist` folder in `whaticket/frontend/`):
 
 ```bash
 npm run build
 ```
 
-Start frontend with pm2, and save pm2 process list to start automatically after reboot:
+The `server.js` previously used with Create React App is no longer the primary way to serve the frontend with Vite.
+For production, you should configure a web server like Nginx to serve the static files from the `whaticket/frontend/dist` directory.
+The Nginx configuration example below for `whaticket-frontend` should be updated to point its `root` videojuegos `whaticket/frontend/dist` and use `try_files` to handle client-side routing.
 
+If you still want to use PM2 with a simple server for the frontend (less recommended than a proper Nginx setup for static files):
+You could adapt the old `server.js` to serve from the `dist` folder, or use a simple static server like `serve`:
 ```bash
-pm2 start server.js --name whaticket-frontend
-pm2 save
+# Example using 'serve' package (install globally or as dev dependency)
+# pm2 start serve --name whaticket-frontend --spa -- -s dist -l 3000
+# (This assumes 'serve' is installed and 'dist' is the build output in the current dir)
+# For the existing pm2 setup with server.js, you'd need to:
+# 1. Go to whaticket/frontend
+# 2. npm run build (output is in 'dist')
+# 3. Modify server.js to serve from 'dist' instead of 'build'
+# 4. Then run: pm2 start server.js --name whaticket-frontend (from whaticket/frontend)
+pm2 save # To save the PM2 process list
 ```
 
 To check if it's running, run `pm2 list`, it should look like:
@@ -330,10 +351,15 @@ Edit and fill it with this information, changing `server_name` to yours equivale
 server {
   server_name myapp.mydomain.com;
 
+  # Assuming your frontend build output is in /path/to/whaticket/frontend/dist
+  root /path/to/whaticket/frontend/dist;
+  index index.html;
+
   location / {
-    proxy_pass http://127.0.0.1:3333;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
+    try_files $uri $uri/ /index.html; # Handles client-side routing
+    # proxy_pass http://127.0.0.1:3333; # No longer proxying to server.js if Nginx serves static files
+    # proxy_http_version 1.1; # Not needed for static files
+    # proxy_set_header Upgrade $http_upgrade; # Not needed for static files
     proxy_set_header Connection 'upgrade';
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -513,9 +539,12 @@ npx prisma migrate deploy # Apply new migrations
 # npx prisma db seed # If you have seeds and want to re-apply or update them
 cd ../frontend
 npm install
-rm -rf build
-npm run build
-pm2 restart all
+npm run build # Generates output in 'dist' folder
+# pm2 restart whaticket-frontend # If using PM2 with a custom server or 'serve'
+# If Nginx serves static files directly, a pm2 restart for frontend might not be needed,
+# but ensure Nginx cache is cleared obstáculos browser cache is hard refreshed.
+# For simplicity, if pm2 is used for a frontend server wrapper:
+pm2 restart whaticket-frontend
 
 echo "Update finished. Enjoy!"
 ```
