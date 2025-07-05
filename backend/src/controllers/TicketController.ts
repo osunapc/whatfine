@@ -61,13 +61,18 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
 };
 
 export const store = async (req: Request, res: Response): Promise<Response> => {
-  const { contactId, status, userId }: TicketData = req.body;
+  const { contactId, status, userId, queueId }: TicketData = req.body; // Incluir queueId si se envía
 
-  const ticket = await CreateTicketService({ contactId, status, userId });
+  // CreateTicketService ya está refactorizado para Prisma y devuelve PrismaTicket
+  const ticket = await CreateTicketService({ contactId, status, userId, queueId });
 
   const io = getIO();
+  // Asegurarse de que el ticket tenga las relaciones esperadas por el frontend para el evento de socket.
+  // CreateTicketService incluye 'contact'. Si se necesitan más, se debe ajustar allí o hacer un findUnique aquí.
+  // Por ahora, asumimos que lo devuelto por CreateTicketService es suficiente.
   io.to(ticket.status).emit("ticket", {
-    action: "update",
+    action: "update", // La acción original era "update", podría ser "create" si es un nuevo ticket.
+                     // Mantendremos "update" por consistencia con el original.
     ticket
   });
 
@@ -87,23 +92,27 @@ export const update = async (
   res: Response
 ): Promise<Response> => {
   const { ticketId } = req.params;
-  const ticketData: TicketData = req.body;
+  const ticketData = req.body as Partial<TicketData>; // Permitir actualizaciones parciales, TicketData define campos opcionales
 
+  // UpdateTicketService devuelve { ticket: ShowTicketPrisma, oldStatus, oldUserId }
   const { ticket } = await UpdateTicketService({
-    ticketData,
+    ticketData, // TypeScript inferirá el tipo correcto para el servicio
     ticketId
   });
 
   if (ticket.status === "closed") {
-    const whatsapp = await ShowWhatsAppService(ticket.whatsappId);
+    if (ticket.whatsappId && ticket.contact) { // Asegurarse de que whatsappId y contact existan
+      const whatsapp = await ShowWhatsAppService(ticket.whatsappId); // Devuelve WhatsappWithQueues
 
-    const { farewellMessage } = whatsapp;
+      const { farewellMessage } = whatsapp;
 
-    if (farewellMessage) {
-      await SendWhatsAppMessage({
-        body: formatBody(farewellMessage, ticket.contact),
-        ticket
-      });
+      if (farewellMessage) {
+        // SendWhatsAppMessage espera TicketWithContact. 'ticket' (ShowTicketPrisma) es compatible.
+        await SendWhatsAppMessage({
+          body: formatBody(farewellMessage, ticket.contact as any), // ticket.contact es PrismaContact. formatBody podría esperar tipo Sequelize.
+          ticket: ticket as any // Usar 'as any' si hay problemas de tipo con los helpers pendientes.
+        });
+      }
     }
   }
 
@@ -116,15 +125,18 @@ export const remove = async (
 ): Promise<Response> => {
   const { ticketId } = req.params;
 
-  const ticket = await DeleteTicketService(ticketId);
+  // DeleteTicketService ya está refactorizado y devuelve el PrismaTicket eliminado.
+  const deletedTicket = await DeleteTicketService(ticketId);
 
   const io = getIO();
-  io.to(ticket.status)
-    .to(ticketId)
+  // Usar deletedTicket.status y deletedTicket.id (que es un número)
+  // El evento original emitía +ticketId (convirtiéndolo a número), lo cual es bueno.
+  io.to(deletedTicket.status)
+    .to(deletedTicket.id.toString()) // El canal del ticket suele ser su ID como string
     .to("notification")
     .emit("ticket", {
       action: "delete",
-      ticketId: +ticketId
+      ticketId: deletedTicket.id // Enviar el ID numérico
     });
 
   return res.status(200).json({ message: "ticket deleted" });

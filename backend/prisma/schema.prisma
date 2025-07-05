@@ -1,0 +1,310 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db" // Ruta típica para un archivo de base de datos SQLite
+}
+
+/// Representa un usuario en el sistema.
+model User {
+  /// Identificador único del usuario.
+  id Int @id @default(autoincrement())
+  /// Nombre del usuario.
+  name String?
+  /// Dirección de correo electrónico del usuario (debe ser única).
+  email String @unique
+  /// Hash de la contraseña del usuario.
+  passwordHash String
+  /// Versión del token de autenticación.
+  tokenVersion Int @default(0)
+  /// Perfil del usuario (ej. "admin", "user").
+  profile String @default("admin")
+  /// Fecha de creación del usuario.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización del usuario.
+  updatedAt DateTime @updatedAt
+
+  /// Relación opcional con una instancia de Whatsapp por defecto para el usuario.
+  whatsappId Int?
+  whatsapp   Whatsapp? @relation("UserWhatsapp", fields: [whatsappId], references: [id])
+
+  /// Tickets asignados a este usuario.
+  tickets Ticket[]
+
+  /// Colas a las que este usuario está asignado (relación muchos a muchos a través de UserQueue).
+  userQueues UserQueue[]
+
+  @@map("Users") // Mapea al nombre de tabla "Users" para consistencia si es necesario.
+}
+
+/// Representa un ticket de soporte.
+model Ticket {
+  /// Identificador único del ticket.
+  id Int @id @default(autoincrement())
+  /// Estado actual del ticket (ej. "pending", "open", "closed").
+  status String @default("pending")
+  /// Número de mensajes no leídos en el ticket.
+  unreadMessages Int?
+  /// Último mensaje del ticket (puede ser un resumen o el texto completo).
+  lastMessage String? @db.Text
+  /// Indica si el ticket es de un grupo de WhatsApp.
+  isGroup Boolean @default(false)
+  /// Fecha de creación del ticket.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización del ticket.
+  updatedAt DateTime @updatedAt
+
+  /// Usuario asignado a este ticket.
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  /// Contacto asociado a este ticket.
+  contactId Int
+  contact   Contact  @relation(fields: [contactId], references: [id])
+  /// Instancia de Whatsapp a través de la cual se recibió/envió el ticket.
+  whatsappId Int?
+  whatsapp   Whatsapp? @relation(fields: [whatsappId], references: [id], onDelete: SetNull)
+  /// Cola a la que está asignado el ticket.
+  queueId   Int?
+  queue     Queue?   @relation(fields: [queueId], references: [id], onDelete: SetNull)
+
+  /// Mensajes asociados a este ticket.
+  messages Message[]
+
+  @@map("Tickets")
+}
+
+/// Representa un contacto.
+model Contact {
+  /// Identificador único del contacto.
+  id Int @id @default(autoincrement())
+  /// Nombre del contacto.
+  name String
+  /// Número de teléfono del contacto (debe ser único).
+  number String @unique
+  /// Dirección de correo electrónico del contacto.
+  email String @default("")
+  /// URL de la foto de perfil del contacto.
+  profilePicUrl String? @db.Text
+  /// Indica si el contacto es un grupo de WhatsApp.
+  isGroup Boolean @default(false)
+  /// Fecha de creación del contacto.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización del contacto.
+  updatedAt DateTime @updatedAt
+
+  /// Tickets asociados a este contacto.
+  tickets Ticket[]
+  /// Campos personalizados asociados a este contacto.
+  customFields ContactCustomField[]
+
+  /// Mensajes enviados o recibidos por este contacto.
+  messages Message[]
+
+  @@map("Contacts")
+}
+
+/// Representa un mensaje dentro de un ticket.
+model Message {
+  /// Identificador único del mensaje (generalmente proporcionado por WhatsApp).
+  id String @id
+  /// Estado de entrega/lectura del mensaje (ack).
+  ack Int @default(0)
+  /// Indica si el mensaje ha sido leído.
+  read Boolean @default(false)
+  /// Indica si el mensaje fue enviado por el usuario del sistema (true) o por el contacto (false).
+  fromMe Boolean @default(false)
+  /// Cuerpo del mensaje.
+  body String @db.Text
+  /// URL del archivo multimedia adjunto (si existe).
+  mediaUrl String? @db.Text // El getter de Sequelize se manejará a nivel de aplicación.
+  /// Tipo de archivo multimedia (ej. "image", "audio", "video").
+  mediaType String?
+  /// Indica si el mensaje ha sido eliminado.
+  isDeleted Boolean @default(false)
+  /// Fecha de creación del mensaje.
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  /// Fecha de la última actualización del mensaje.
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  /// ID del mensaje citado (si este mensaje es una respuesta).
+  quotedMsgId String?
+  /// Mensaje citado.
+  quotedMsg Message? @relation("QuotedMessages", fields: [quotedMsgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  /// Relación inversa para mensajes que citan a este.
+  quotes Message[] @relation("QuotedMessages")
+
+  /// Ticket al que pertenece este mensaje.
+  ticketId Int
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  // Contacto que envió o recibió este mensaje (puede ser redundante si ya está en Ticket).
+  // Se mantiene para reflejar el modelo original de Sequelize.
+  contactId Int?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+
+  @@map("Messages")
+}
+
+/// Representa una instancia/conexión de WhatsApp.
+model Whatsapp {
+  /// Identificador único de la instancia de WhatsApp.
+  id Int @id @default(autoincrement())
+  /// Nombre descriptivo de la conexión de WhatsApp.
+  name String? @unique
+  /// Datos de la sesión de WhatsApp.
+  session String? @db.Text
+  /// Código QR para la conexión (en formato de texto).
+  qrcode String? @db.Text
+  /// Estado de la conexión (ej. "CONNECTED", "DISCONNECTED").
+  status String?
+  /// Nivel de batería del teléfono conectado.
+  battery String?
+  /// Indica si el teléfono está conectado a la corriente.
+  plugged Boolean?
+  /// Número de reintentos de conexión.
+  retries Int?
+  /// Mensaje de bienvenida automático.
+  greetingMessage String? @db.Text
+  /// Mensaje de despedida automático.
+  farewellMessage String? @db.Text
+  /// Indica si esta es la conexión de WhatsApp por defecto.
+  isDefault Boolean? @default(false)
+  /// Fecha de creación de la conexión.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización de la conexión.
+  updatedAt DateTime @updatedAt
+
+  /// Tickets asociados a esta instancia de WhatsApp.
+  tickets Ticket[]
+  /// Colas asociadas a esta instancia de WhatsApp (relación muchos a muchos a través de WhatsappQueue).
+  whatsappQueues WhatsappQueue[]
+
+  /// Usuarios que tienen esta instancia de Whatsapp como su instancia por defecto.
+  users User[] @relation("UserWhatsapp")
+
+  @@map("Whatsapps")
+}
+
+/// Representa una cola de atención.
+model Queue {
+  /// Identificador único de la cola.
+  id Int @id @default(autoincrement())
+  /// Nombre de la cola (debe ser único).
+  name String @unique
+  /// Color asociado a la cola (para la interfaz de usuario).
+  color String @unique
+  /// Mensaje de saludo específico para esta cola.
+  greetingMessage String? @db.Text
+  /// Fecha de creación de la cola.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización de la cola.
+  updatedAt DateTime @updatedAt
+
+  /// Instancias de WhatsApp asociadas a esta cola (relación muchos a muchos a través de WhatsappQueue).
+  whatsappQueues WhatsappQueue[]
+  /// Usuarios asignados a esta cola (relación muchos a muchos a través de UserQueue).
+  userQueues UserQueue[]
+  /// Tickets asignados a esta cola.
+  tickets Ticket[]
+
+
+  @@map("Queues")
+}
+
+/// Modelo de unión para la relación muchos a muchos entre Usuarios y Colas.
+model UserQueue {
+  /// Identificador del usuario.
+  userId Int
+  /// Identificador de la cola.
+  queueId Int
+  /// Fecha de creación de la asociación.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización de la asociación.
+  updatedAt DateTime @updatedAt
+
+  /// Usuario asociado.
+  user User @relation(fields: [userId], references: [id])
+  /// Cola asociada.
+  queue Queue @relation(fields: [queueId], references: [id])
+
+  @@id([userId, queueId]) // Clave primaria compuesta.
+  @@map("UserQueues")
+}
+
+/// Modelo de unión para la relación muchos a muchos entre Instancias de WhatsApp y Colas.
+model WhatsappQueue {
+  /// Identificador de la instancia de WhatsApp.
+  whatsappId Int
+  /// Identificador de la cola.
+  queueId Int
+  /// Fecha de creación de la asociación.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización de la asociación.
+  updatedAt DateTime @updatedAt
+
+  /// Instancia de WhatsApp asociada.
+  whatsapp Whatsapp @relation(fields: [whatsappId], references: [id])
+  /// Cola asociada.
+  queue Queue @relation(fields: [queueId], references: [id])
+
+
+  @@id([whatsappId, queueId]) // Clave primaria compuesta.
+  @@map("WhatsappQueues")
+}
+
+/// Representa una respuesta rápida predefinida.
+model QuickAnswer {
+  /// Identificador único de la respuesta rápida.
+  id Int @id @default(autoincrement())
+  /// Atajo de teclado o palabra clave para la respuesta rápida.
+  shortcut String @db.Text
+  /// Contenido del mensaje de la respuesta rápida.
+  message String @db.Text
+  /// Fecha de creación de la respuesta rápida.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización de la respuesta rápida.
+  updatedAt DateTime @updatedAt
+
+  @@map("QuickAnswers")
+}
+
+/// Representa una configuración general del sistema.
+model Setting {
+  /// Clave única de la configuración.
+  key String @id
+  /// Valor de la configuración.
+  value String @db.Text // Cambiado a Text por si el valor es largo.
+  /// Fecha de creación de la configuración.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización de la configuración.
+  updatedAt DateTime @updatedAt
+
+  @@map("Settings")
+}
+
+/// Representa un campo personalizado para un contacto.
+model ContactCustomField {
+  /// Identificador único del campo personalizado.
+  id Int @id @default(autoincrement())
+  /// Nombre del campo personalizado.
+  name String
+  /// Valor del campo personalizado.
+  value String @db.Text // Cambiado a Text por si el valor es largo.
+  /// Fecha de creación del campo personalizado.
+  createdAt DateTime @default(now())
+  /// Fecha de la última actualización del campo personalizado.
+  updatedAt DateTime @updatedAt
+
+  /// Contacto al que pertenece este campo personalizado.
+  contactId Int
+  contact   Contact @relation(fields: [contactId], references: [id])
+
+  @@map("ContactCustomFields")
+}

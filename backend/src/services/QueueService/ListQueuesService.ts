@@ -1,7 +1,16 @@
-import Queue from "../../models/Queue";
+import prisma from "../../database";
+import { Queue as PrismaQueue } from "../../generated/prisma";
 
-const ListQueuesService = async (): Promise<Queue[]> => {
-  const queues = await Queue.findAll({ order: [["name", "ASC"]] });
+/**
+ * Servicio para listar todas las colas de atención.
+ * @returns Una promesa que se resuelve a un array de colas, ordenadas por nombre.
+ */
+const ListQueuesService = async (): Promise<PrismaQueue[]> => {
+  const queues = await prisma.queue.findMany({
+    orderBy: {
+      name: "asc"
+    }
+  });
 
   return queues;
 };

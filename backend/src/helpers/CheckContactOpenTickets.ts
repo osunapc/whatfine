@@ -1,16 +1,26 @@
-import { Op } from "sequelize";
 import AppError from "../errors/AppError";
-import Ticket from "../models/Ticket";
+import prisma from "../database";
 
+/**
+ * Verifica si un contacto ya tiene tickets abiertos o pendientes para una conexión de WhatsApp específica.
+ * Lanza un error si se encuentra algún ticket abierto o pendiente.
+ * @param contactId ID del contacto.
+ * @param whatsappId ID de la conexión de WhatsApp.
+ * @throws AppError con el mensaje "ERR_OTHER_OPEN_TICKET" si existen tickets abiertos/pendientes.
+ */
 const CheckContactOpenTickets = async (
   contactId: number,
   whatsappId: number
 ): Promise<void> => {
-  const ticket = await Ticket.findOne({
-    where: { contactId, whatsappId, status: { [Op.or]: ["open", "pending"] } }
+  const openTicket = await prisma.ticket.findFirst({
+    where: {
+      contactId,
+      whatsappId,
+      status: { in: ["open", "pending"] }
+    }
   });
 
-  if (ticket) {
+  if (openTicket) {
     throw new AppError("ERR_OTHER_OPEN_TICKET");
   }
 };

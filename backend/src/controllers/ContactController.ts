@@ -38,12 +38,14 @@ interface ContactData {
 export const index = async (req: Request, res: Response): Promise<Response> => {
   const { searchParam, pageNumber } = req.query as IndexQuery;
 
-  const { contacts, count, hasMore } = await ListContactsService({
+  // ListContactsService ya fue refactorizado y devuelve objetos Contact de Prisma.
+  // La estructura de la respuesta { contacts, count, hasMore } se mantiene.
+  const result = await ListContactsService({
     searchParam,
     pageNumber
   });
 
-  return res.json({ contacts, count, hasMore });
+  return res.json(result);
 };
 
 export const getContact = async (req: Request, res: Response): Promise<Response> => {

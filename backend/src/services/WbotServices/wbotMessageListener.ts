@@ -10,9 +10,18 @@ import {
   Client
 } from "whatsapp-web.js";
 
-import Contact from "../../models/Contact";
-import Ticket from "../../models/Ticket";
-import Message from "../../models/Message";
+// import Contact from "../../models/Contact"; // Usar Prisma.Contact
+// import Ticket from "../../models/Ticket";   // Usar Prisma.Ticket
+// import Message from "../../models/Message"; // Usar Prisma.Message
+import prisma from "../../database";
+import {
+  Contact as PrismaContact,
+  Ticket as PrismaTicket,
+  Message as PrismaMessage,
+  Whatsapp as PrismaWhatsapp, // Necesario para ShowWhatsAppService
+  Queue as PrismaQueue       // Necesario para ShowWhatsAppService
+} from "../../generated/prisma";
+
 
 import { getIO } from "../../libs/socket";
 import CreateMessageService from "../MessageServices/CreateMessageService";
@@ -32,29 +41,36 @@ interface Session extends Client {
 
 const writeFileAsync = promisify(writeFile);
 
-const verifyContact = async (msgContact: WbotContact): Promise<Contact> => {
-  const profilePicUrl = await msgContact.getProfilePicUrl();
+/**
+ * Verifica y crea o actualiza un contacto en la base de datos a partir de un WbotContact.
+ * @param msgContact El objeto WbotContact de whatsapp-web.js.
+ * @returns Una promesa que se resuelve al contacto de Prisma creado o actualizado.
+ */
+const verifyContact = async (msgContact: WbotContact): Promise<PrismaContact> => {
+  const profilePicUrl = await msgContact.getProfilePicUrl(); // Esto puede ser null
 
   const contactData = {
     name: msgContact.name || msgContact.pushname || msgContact.id.user,
-    number: msgContact.id.user,
-    profilePicUrl,
+    number: msgContact.id.user, // Este es el JID, ej: "xxxxxxxxxxx@c.us" o "xxxxxxxxxxx-yyyyyyyyyy@g.us"
+                               // CreateOrUpdateContactService limpia el @c.us para números no grupales.
+    profilePicUrl: profilePicUrl ?? undefined, // Asegurar que sea undefined si es null
     isGroup: msgContact.isGroup
   };
 
-  const contact = CreateOrUpdateContactService(contactData);
+  // CreateOrUpdateContactService ya está refactorizado y devuelve PrismaContact
+  const contact = await CreateOrUpdateContactService(contactData);
 
   return contact;
 };
 
 const verifyQuotedMessage = async (
   msg: WbotMessage
-): Promise<Message | null> => {
+): Promise<PrismaMessage | null> => {
   if (!msg.hasQuotedMsg) return null;
 
   const wbotQuotedMsg = await msg.getQuotedMessage();
 
-  const quotedMsg = await Message.findOne({
+  const quotedMsg = await prisma.message.findUnique({
     where: { id: wbotQuotedMsg.id.id }
   });
 
@@ -77,14 +93,21 @@ function makeRandomId(length: number) {
     return result;
 }
 
+/**
+ * Procesa y guarda un mensaje multimedia.
+ * @param msg El mensaje de Wbot (con multimedia).
+ * @param ticket El ticket de Prisma asociado.
+ * @param contact El contacto de Prisma asociado.
+ * @returns Una promesa que se resuelve al mensaje de Prisma creado.
+ */
 const verifyMediaMessage = async (
   msg: WbotMessage,
-  ticket: Ticket,
-  contact: Contact
-): Promise<Message> => {
-  const quotedMsg = await verifyQuotedMessage(msg);
+  ticket: PrismaTicket, // Usar tipo Prisma
+  contact: PrismaContact // Usar tipo Prisma
+): Promise<PrismaMessage> => { // Devolver tipo Prisma
+  const quotedMsg = await verifyQuotedMessage(msg); // Ya devuelve PrismaMessage | null
 
-  const media = await msg.downloadMedia();
+  const media = await msg.downloadMedia(); // Esto es de whatsapp-web.js
 
   if (!media) {
     throw new Error("ERR_WAPP_DOWNLOAD_MEDIA");
@@ -119,44 +142,65 @@ const verifyMediaMessage = async (
     read: msg.fromMe,
     mediaUrl: media.filename,
     mediaType: media.mimetype.split("/")[0],
-    quotedMsgId: quotedMsg?.id
+    quotedMsgId: quotedMsg?.id // quotedMsg es PrismaMessage | null
   };
 
-  await ticket.update({ lastMessage: msg.body || media.filename });
+  await prisma.ticket.update({ // Usar prisma.ticket.update
+    where: { id: ticket.id },
+    data: { lastMessage: msg.body || media.filename }
+  });
+
+  // CreateMessageService ya está refactorizado y devuelve PrismaMessage
   const newMessage = await CreateMessageService({ messageData });
 
   return newMessage;
 };
 
+/**
+ * Procesa y guarda un mensaje de texto o localización.
+ * @param msg El mensaje de Wbot.
+ * @param ticket El ticket de Prisma asociado.
+ * @param contact El contacto de Prisma asociado.
+ */
 const verifyMessage = async (
   msg: WbotMessage,
-  ticket: Ticket,
-  contact: Contact
-) => {
+  ticket: PrismaTicket, // Usar tipo Prisma
+  contact: PrismaContact // Usar tipo Prisma
+): Promise<void> => { // No devuelve nada explícitamente
 
-  if (msg.type === 'location')
-    msg = prepareLocation(msg);
+  let finalBody = msg.body;
+  let lastMessageContent = msg.body;
 
-  const quotedMsg = await verifyQuotedMessage(msg);
+  if (msg.type === 'location') {
+    const leichter = prepareLocation(msg); // prepareLocation modifica msg.body
+    finalBody = leichter.body; // el cuerpo modificado para guardar
+    // @ts-ignore
+    lastMessageContent = msg.location.description ? "Localization - " + msg.location.description.split('\\n')[0] : "Localization";
+  }
+
+  const quotedMsg = await verifyQuotedMessage(msg); // Ya devuelve PrismaMessage | null
+
   const messageData = {
     id: msg.id.id,
     ticketId: ticket.id,
     contactId: msg.fromMe ? undefined : contact.id,
-    body: msg.body,
+    body: finalBody, // Usar el cuerpo posiblemente modificado por prepareLocation
     fromMe: msg.fromMe,
     mediaType: msg.type,
     read: msg.fromMe,
     quotedMsgId: quotedMsg?.id
   };
 
-  // temporaryly disable ts checks because of type definition bug for Location object
-  // @ts-ignore
-  await ticket.update({ lastMessage: msg.type === "location" ? msg.location.description ? "Localization - " + msg.location.description.split('\\n')[0] : "Localization" : msg.body });
+  await prisma.ticket.update({ // Usar prisma.ticket.update
+    where: { id: ticket.id },
+    data: { lastMessage: lastMessageContent }
+  });
 
+  // CreateMessageService ya está refactorizado
   await CreateMessageService({ messageData });
 };
 
-const prepareLocation = (msg: WbotMessage): WbotMessage => {
+const prepareLocation = (msg: WbotMessage): WbotMessage => { // Devuelve WbotMessage modificado
   let gmapsUrl = "https://maps.google.com/maps?q=" + msg.location.latitude + "%2C" + msg.location.longitude + "&z=17&hl=pt-BR";
 
   msg.body = "data:image/png;base64," + msg.body + "|" + gmapsUrl;
@@ -168,46 +212,63 @@ const prepareLocation = (msg: WbotMessage): WbotMessage => {
   return msg;
 };
 
+/**
+ * Maneja la lógica de selección de cola para un ticket si es necesario.
+ * @param wbot La instancia de Wbot (cliente de whatsapp-web.js).
+ * @param msg El mensaje de Wbot que activó la lógica (usado para obtener la opción del usuario).
+ * @param ticket El ticket de Prisma asociado.
+ * @param contact El contacto de Prisma asociado.
+ */
 const verifyQueue = async (
-  wbot: Session,
+  wbot: Session, // Session extiende Client y tiene id?: number
   msg: WbotMessage,
-  ticket: Ticket,
-  contact: Contact
-) => {
-  const { queues, greetingMessage } = await ShowWhatsAppService(wbot.id!);
+  ticket: PrismaTicket, // Usar tipo Prisma
+  contact: PrismaContact // Usar tipo Prisma
+): Promise<void> => {
+  // ShowWhatsAppService devuelve WhatsappWithQueues, que tiene .queues como PrismaQueue[]
+  // y .greetingMessage
+  const whatsapp = await ShowWhatsAppService(wbot.id!); // wbot.id debe estar presente y ser válido
+
+  if (!whatsapp || !whatsapp.queues) {
+    logger.error(`WhatsApp o sus colas no encontradas para wbot id: ${wbot.id}`);
+    return;
+  }
+  const { queues, greetingMessage } = whatsapp;
+
 
   if (queues.length === 1) {
-    await UpdateTicketService({
+    await UpdateTicketService({ // Ya refactorizado
       ticketData: { queueId: queues[0].id },
-      ticketId: ticket.id
+      ticketId: ticket.id.toString() // UpdateTicketService espera string o number
     });
-
     return;
   }
 
-  const selectedOption = msg.body;
-
-  const choosenQueue = queues[+selectedOption - 1];
+  const selectedOption = msg.body; // El usuario envía un número correspondiente a la opción de cola
+  const choosenQueue = queues[+selectedOption - 1]; // Convierte a número y ajusta índice
 
   if (choosenQueue) {
-    await UpdateTicketService({
+    await UpdateTicketService({ // Ya refactorizado
       ticketData: { queueId: choosenQueue.id },
-      ticketId: ticket.id
+      ticketId: ticket.id.toString()
     });
 
-    const body = formatBody(`\u200e${choosenQueue.greetingMessage}`, contact);
+    // Asegurarse de que choosenQueue.greetingMessage no sea null si se va a usar en formatBody
+    const body = formatBody(`\u200e${choosenQueue.greetingMessage || ""}`, contact as any);
+    // 'as any' para contact si formatBody espera un tipo específico de Sequelize.
 
     const sentMessage = await wbot.sendMessage(`${contact.number}@c.us`, body);
-
+    // verifyMessage ya está refactorizado y espera PrismaTicket y PrismaContact
     await verifyMessage(sentMessage, ticket, contact);
   } else {
     let options = "";
-
     queues.forEach((queue, index) => {
       options += `*${index + 1}* - ${queue.name}\n`;
     });
 
-    const body = formatBody(`\u200e${greetingMessage}\n${options}`, contact);
+    // Asegurarse de que greetingMessage no sea null
+    const body = formatBody(`\u200e${greetingMessage || ""}\n${options}`, contact as any);
+    // 'as any' para contact
 
     const debouncedSentMessage = debounce(
       async () => {
@@ -244,16 +305,17 @@ const isValidMsg = (msg: WbotMessage): boolean => {
 };
 
 const handleMessage = async (
-  msg: WbotMessage,
-  wbot: Session
+const handleMessage = async (
+  msg: WbotMessage, // Mensaje de whatsapp-web.js
+  wbot: Session     // Cliente de whatsapp-web.js, con `id` de nuestra BD añadido
 ): Promise<void> => {
   if (!isValidMsg(msg)) {
     return;
   }
 
   try {
-    let msgContact: WbotContact;
-    let groupContact: Contact | undefined;
+    let msgContact: WbotContact; // Objeto Contacto de whatsapp-web.js
+    let groupContact: PrismaContact | undefined; // Contacto de grupo de nuestra BD (Prisma)
 
     if (msg.fromMe) {
       // messages sent automatically by wbot have a special character in front of it
@@ -283,41 +345,46 @@ const handleMessage = async (
         msgGroupContact = await wbot.getContactById(msg.from);
       }
 
-      groupContact = await verifyContact(msgGroupContact);
+      groupContact = await verifyContact(msgGroupContact); // Devuelve PrismaContact
     }
+    // ShowWhatsAppService devuelve WhatsappWithQueues (que es PrismaWhatsapp & { queues: PrismaQueue[] })
     const whatsapp = await ShowWhatsAppService(wbot.id!);
 
     const unreadMessages = msg.fromMe ? 0 : chat.unreadCount;
 
-    const contact = await verifyContact(msgContact);
+    const contact = await verifyContact(msgContact); // Devuelve PrismaContact
 
     if (
       unreadMessages === 0 &&
       whatsapp.farewellMessage &&
-      formatBody(whatsapp.farewellMessage, contact) === msg.body
+      formatBody(whatsapp.farewellMessage, contact as any) === msg.body // contact es PrismaContact
     )
       return;
 
+    // FindOrCreateTicketService devuelve ShowTicketPrisma (PrismaTicket con relaciones)
     const ticket = await FindOrCreateTicketService(
       contact,
-      wbot.id!,
+      wbot.id!, // wbot.id es el whatsappId
       unreadMessages,
       groupContact
     );
 
     if (msg.hasMedia) {
+      // verifyMediaMessage espera PrismaTicket y PrismaContact
       await verifyMediaMessage(msg, ticket, contact);
     } else {
+      // verifyMessage espera PrismaTicket y PrismaContact
       await verifyMessage(msg, ticket, contact);
     }
 
     if (
-      !ticket.queue &&
+      !ticket.queueId && // En Prisma, la relación directa es ticket.queue, pero el ID es queueId
       !chat.isGroup &&
       !msg.fromMe &&
       !ticket.userId &&
-      whatsapp.queues.length >= 1
+      whatsapp.queues && whatsapp.queues.length >= 1
     ) {
+      // verifyQueue espera PrismaTicket y PrismaContact
       await verifyQueue(wbot, msg, ticket, contact);
     }
 
@@ -416,33 +483,57 @@ const handleMessage = async (
 };
 
 const handleMsgAck = async (msg: WbotMessage, ack: MessageAck) => {
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, 500)); // Mantener la pausa
 
   const io = getIO();
 
   try {
-    const messageToUpdate = await Message.findByPk(msg.id.id, {
-      include: [
-        "contact",
-        {
-          model: Message,
-          as: "quotedMsg",
-          include: ["contact"]
+    // Buscar el mensaje en la BD para actualizar su 'ack'
+    // Incluir relaciones necesarias si el evento de socket las espera
+    const messageToUpdate = await prisma.message.findUnique({
+      where: { id: msg.id.id }, // msg.id.id es el ID del mensaje de Wbot
+      include: {
+        contact: true, // Contacto que envió este mensaje
+        ticket: { // Ticket al que pertenece el mensaje (para el canal de socket.io)
+          select: { status: true, id: true } // Solo necesitamos el status y el id del ticket
+        },
+        quotedMsg: { // Mensaje citado
+          include: {
+            contact: true // Contacto del mensaje citado
+          }
         }
-      ]
+      }
     });
+
     if (!messageToUpdate) {
+      logger.warn(`Message ${msg.id.id} not found in DB for ACK update.`);
       return;
     }
-    await messageToUpdate.update({ ack });
 
-    io.to(messageToUpdate.ticketId.toString()).emit("appMessage", {
-      action: "update",
-      message: messageToUpdate
+    const updatedMessage = await prisma.message.update({
+      where: { id: messageToUpdate.id },
+      data: { ack: ack },
+      include: { // Re-incluir para el payload del evento, para consistencia con CreateMessage
+        contact: true,
+        ticket: {
+            include: {
+                contact: true,
+                queue: true,
+                whatsapp: {select: {name: true, id: true}}
+            }
+        },
+        quotedMsg: { include: { contact: true } }
+      }
     });
-  } catch (err) {
+
+    // messageToUpdate.ticketId ya no existe directamente, usamos updatedMessage.ticketId
+    io.to(updatedMessage.ticketId.toString()).emit("appMessage", {
+      action: "update",
+      message: updatedMessage // Enviar el mensaje completo y actualizado
+    });
+  } catch (err: any) { // Especificar tipo para err
     Sentry.captureException(err);
-    logger.error(`Error handling message ack. Err: ${err}`);
+    logger.error(`Error handling message ack for ${msg.id.id}. Err: ${err.message}`);
   }
 };
 

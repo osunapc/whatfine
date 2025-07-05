@@ -11,7 +11,7 @@
 
 A _very simple_ Ticket System based on WhatsApp messages.
 
-Backend uses [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) to receive and send WhatsApp messages, create tickets from them and store all in a MySQL database.
+Backend uses [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) to receive and send WhatsApp messages, create tickets from them and store them in a database managed by **Prisma ORM**. By default, it uses **SQLite** for development.
 
 Frontend is a full-featured multi-user _chat app_ bootstrapped with react-create-app and Material UI, that comunicates with backend using REST API and Websockets. It allows you to interact with contacts, tickets, send and receive WhatsApp messages.
 
@@ -41,20 +41,28 @@ If a contact sent a new message in less than 2 hours interval, and there is no t
 
 ## Installation and Usage (Linux Ubuntu - Development)
 
-Create Mysql Database using docker:
-_Note_: change MYSQL_DATABASE, MYSQL_PASSWORD, MYSQL_USER and MYSQL_ROOT_PASSWORD.
+The backend now uses Prisma ORM and defaults to a SQLite database for development, located at `backend/dev.db`.
+This file will be created automatically when you run the first migration.
 
-```bash
-docker run --name whaticketdb -e MYSQL_ROOT_PASSWORD=strongpassword -e MYSQL_DATABASE=whaticket -e MYSQL_USER=whaticket -e MYSQL_PASSWORD=whaticket --restart always -p 3306:3306 -d mariadb:latest --character-set-server=utf8mb4 --collation-server=utf8mb4_bin
+**Optional: Using MySQL/MariaDB with Docker (for production-like setup or if preferred over SQLite)**
 
-# Or run using `docker-compose` as below
-# Before copy .env.example to .env first and set the variables in the file.
-docker-compose up -d mysql
+If you prefer to use MySQL/MariaDB for development:
+1.  Update `backend/prisma/schema.prisma`:
+    Change `provider = "sqlite"` to `provider = "mysql"`.
+2.  Update `backend/.env`:
+    Set `DATABASE_URL="mysql://USER:PASSWORD@HOST:PORT/DATABASE"` (e.g., `DATABASE_URL="mysql://whaticket:whaticket@localhost:3306/whaticket"`).
+3.  You can then use Docker to run MySQL/MariaDB:
+    _Note_: Change MYSQL_DATABASE, MYSQL_PASSWORD, MYSQL_USER, and MYSQL_ROOT_PASSWORD as needed.
+    ```bash
+    docker run --name whaticketdb -e MYSQL_ROOT_PASSWORD=strongpassword -e MYSQL_DATABASE=whaticket -e MYSQL_USER=whaticket -e MYSQL_PASSWORD=whaticket --restart always -p 3306:3306 -d mariadb:latest --character-set-server=utf8mb4 --collation-server=utf8mb4_bin
 
-# To administer this mysql database easily using phpmyadmin. 
-# It will run by default on port 9000, but can be changed in .env using `PMA_PORT`
-docker-compose -f docker-compose.phpmyadmin.yaml up -d
-```
+    # Or run using `docker-compose` (ensure docker-compose.yml is configured for MySQL)
+    # docker-compose up -d mysql
+
+    # To administer this mysql database easily using phpmyadmin.
+    # It will run by default on port 9000, but can be changed in .env using `PMA_PORT`
+    # docker-compose -f docker-compose.phpmyadmin.yaml up -d
+    ```
 
 Install puppeteer dependencies:
 
@@ -75,32 +83,29 @@ cp .env.example .env
 nano .env
 ```
 
-Fill `.env` file with environment variables:
-
+Fill `.env` file with environment variables (refer to `backend/.env.example`):
+For development with SQLite (default):
 ```bash
 NODE_ENV=DEVELOPMENT      #it helps on debugging
 BACKEND_URL=http://localhost
-FRONTEND_URL=https://localhost:3000
+FRONTEND_URL=http://localhost:3000
 PROXY_PORT=8080
 PORT=8080
 
-DB_HOST=                  #DB host IP, usually localhost
-DB_DIALECT=
-DB_USER=
-DB_PASS=
-DB_NAME=
+DATABASE_URL="file:./dev.db" # Path to your SQLite database file, relative to the backend directory
 
-JWT_SECRET=3123123213123
-JWT_REFRESH_SECRET=75756756756
+JWT_SECRET=yourjwtsecret
+JWT_REFRESH_SECRET=yourjwtrefreshsecret
 ```
+If using MySQL, set `DATABASE_URL` accordingly (e.g., `DATABASE_URL="mysql://user:pass@host:port/db_name"`).
 
-Install backend dependencies, build app, run migrations and seeds:
+Install backend dependencies, build app, run migrations and (optionally) seeds:
 
 ```bash
 npm install
-npm run build
-npx sequelize db:migrate
-npx sequelize db:seed:all
+npm run build # Compiles TypeScript
+npx prisma migrate dev # Creates/updates DB schema, applies migrations
+# npx prisma db seed # Optional: Runs seed script (needs to be configured in package.json and prisma/seed.ts)
 ```
 
 Start backend:
@@ -211,14 +216,18 @@ FRONTEND_URL=https://myapp.mydomain.com   #USE HTTPS HERE, WE WILL ADD SSL LATTE
 PROXY_PORT=443                            #USE NGINX REVERSE PROXY PORT HERE, WE WILL CONFIGURE IT LATTER
 PORT=8080
 
-DB_HOST=localhost
-DB_DIALECT=
-DB_USER=
+# For production, you will likely use a robust database like PostgreSQL or MySQL.
+# Ensure your DATABASE_URL in .env points to your production database.
+# Example for MySQL: DATABASE_URL="mysql://user:password@host:port/database_name"
+# If using MySQL, ensure your prisma/schema.prisma has `provider = "mysql"`.
+DB_HOST=localhost # Relevant if not using DATABASE_URL directly for other tools, but Prisma uses DATABASE_URL
+DB_DIALECT=mysql  # Prisma uses the provider in schema.prisma
+DB_USER=          # Set these if your DATABASE_URL is constructed from them, otherwise DATABASE_URL is king
 DB_PASS=
 DB_NAME=
 
-JWT_SECRET=3123123213123
-JWT_REFRESH_SECRET=75756756756
+JWT_SECRET=yourjwtsecret_prod
+JWT_REFRESH_SECRET=yourjwtrefreshsecret_prod
 ```
 
 Install puppeteer dependencies:
@@ -227,14 +236,14 @@ Install puppeteer dependencies:
 sudo apt-get install -y libxshmfence-dev libgbm-dev wget unzip fontconfig locales gconf-service libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgcc1 libgconf-2-4 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libappindicator1 libnss3 lsb-release xdg-utils
 ```
 
-Install backend dependencies, build app, run migrations and seeds:
+Install backend dependencies, build app, run migrations and (optionally) seeds:
 
 ```bash
 cd whaticket/backend
 npm install
 npm run build
-npx sequelize db:migrate
-npx sequelize db:seed:all
+npx prisma migrate deploy # Use for production environment
+# npx prisma db seed # Optional: Runs seed script
 ```
 
 Start it with `npm start`, you should see: `Server started on port...` on console. Hit `CTRL + C` to exit.
@@ -429,16 +438,21 @@ FRONTEND_URL=https://myapp.mydomain.com
 MAX_CONCURRENT_SESSIONS=                # default: 1; Use only if using browserless
 ```
 
+# Ensure your backend/.env file has the correct DATABASE_URL for your Docker setup.
+# If using the MySQL service in docker-compose.yaml, it would be something like:
+# DATABASE_URL="mysql://whaticket:whaticket@mysql:3306/whaticket"
+# Also, ensure `provider = "mysql"` in `backend/prisma/schema.prisma`.
+
 After defining the variables, run the following command:
 
 ```bash
 docker-compose up -d --build
 ```
 
-On the `first` run it will be necessary to seed the database tables using the following command:
-
+On the `first` run, it will be necessary to apply migrations and optionally seed the database:
 ```bash
-docker-compose exec backend npx sequelize db:seed:all
+docker-compose exec backend npx prisma migrate deploy
+# docker-compose exec backend npx prisma db seed # Optional, if seeds are configured
 ```
 
 #### SSL Certificate
@@ -495,8 +509,8 @@ cd backend
 npm install
 rm -rf dist
 npm run build
-npx sequelize db:migrate
-npx sequelize db:seed
+npx prisma migrate deploy # Apply new migrations
+# npx prisma db seed # If you have seeds and want to re-apply or update them
 cd ../frontend
 npm install
 rm -rf build
